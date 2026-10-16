@@ -4,7 +4,7 @@
     "lru-cache": "^11.5.1"
   },
   "scripts": {
-    "start": "tsx --env-file=.env server.ts",
+    "start": "tsx server.ts",
     "test": "tsx --test tests/signature.test.ts"
   },
   "devDependencies": {
