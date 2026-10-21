@@ -1,8 +1,8 @@
 import express from "express";
-import crypto from "crypto";
+import { verifyWebhookSignature } from "./signature";
 
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
-console.log("WEBHOOK_SECRET:", WEBHOOK_SECRET);
+if (!WEBHOOK_SECRET) throw new Error("Set WEBHOOK_SECRET before starting webhook-payment.");
 
 const app = express();
 
@@ -37,27 +37,24 @@ const deadLetterQueue: TrackedEvent[] = [];
 
 app.use(express.json({
     verify: (req: any, _res, buf) => {
-        req.rawBody = buf.toString();
+        req.rawBody = buf;
     }
 }));
 
-function computeSignature(payload: string) {
-    return crypto.createHmac("sha256", WEBHOOK_SECRET).update(payload).digest("hex");
-}
-
-function verifySignature(req: any, res: any): boolean {
+function verifyRequestSignature(req: any, res: any): boolean {
     const signature = req.header("x-webhook-signature");
 
     if (!signature) {
-        console.log("Missing signature");
         res.status(401).send("Missing signature");
         return false;
     }
 
-    const computedSignature = computeSignature(req.rawBody);
+    if (!Buffer.isBuffer(req.rawBody)) {
+        res.status(400).send("Missing raw body");
+        return false;
+    }
 
-    if (signature !== computedSignature) {
-        console.log("Invalid signature");
+    if (!verifyWebhookSignature(signature, req.rawBody, WEBHOOK_SECRET)) {
         res.status(401).send("Invalid signature");
         return false;
     }
@@ -80,11 +77,8 @@ async function processEvent(event: WebhookEvent): Promise<void> {
 app.post("/webhook/payment", async (req: any, res: any) => {
     const content = req.body as WebhookEvent;
 
-    const ok = verifySignature(req, res);
+    const ok = verifyRequestSignature(req, res);
     if (!ok) return;
-
-    console.log("Raw body:", req.rawBody);
-    console.log("Parsed body:", req.body);
 
     if (!content || !content.id) {
         return res.status(400).send("Bad Request: Missing ID");
@@ -107,7 +101,6 @@ app.post("/webhook/payment", async (req: any, res: any) => {
 
     // event -> ajouté à la queue
     queue.push({ event: content, attempt: 0 });
-    console.log("Queued body webhook:", content);
 
     res.status(200).send("ok");
 });
@@ -144,10 +137,12 @@ setInterval(async () => {
     }
 }, 1000);
 
-app.get("/events", (req: any, res: any) => {
+app.get("/events", (_req: any, res: any) => {
+    const events = Array.from(eventsById.values());
     res.json({
-        processed: Array.from(eventsById.values()),
-        dlq: deadLetterQueue
+        processed: events.filter((event) => event.status === "processed").length,
+        pending: events.filter((event) => event.status === "pending").length,
+        deadLetter: deadLetterQueue.length
     });
 });
 
